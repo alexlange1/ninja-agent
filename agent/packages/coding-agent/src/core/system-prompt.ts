@@ -165,7 +165,8 @@ function buildTaskDiscoverySection(taskText: string, cwd: string): string {
 		const criteriaCount = countAcceptanceCriteria(taskText);
 		if (criteriaCount > 0) {
 			sections.push(`\nThis task has ${criteriaCount} acceptance criteria.`);
-			if (criteriaCount >= 3) sections.push(`Tasks with ${criteriaCount}+ criteria almost always require edits across multiple files. Do not stop after editing one file.`);
+			if (criteriaCount <= 2) sections.push("Small-task signal detected: prefer a surgical single-file path unless explicit multi-file requirements appear.");
+			if (criteriaCount >= 3) sections.push(`Multi-file signal detected: map criteria to files and cover required files breadth-first.`);
 		}
 		const namedFiles = extractNamedFiles(taskText);
 		if (namedFiles.length > 0) {
@@ -178,112 +179,79 @@ function buildTaskDiscoverySection(taskText: string, cwd: string): string {
 	return "";
 }
 
-// Diff-overlap preamble injected on every invocation.
-// Keeps the model focused on minimal, style-accurate, high-alignment diffs.
+// Dual-mode diff-overlap preamble injected on every invocation.
+// Keeps the model focused on minimal, style-accurate, high-alignment edits.
 const TAU_SCORING_PREAMBLE = `# Diff Overlap Optimizer
 
-Your diff is scored against a hidden reference diff produced by another solver on the identical task.
-The exact scoring formula may vary by harness version, but it consistently rewards high changed-line overlap
-(typically LCS-like alignment) and penalizes surplus or misaligned edits.
-No semantic evaluation. No test suite. Match likely reference lines and ordering as closely as possible.
+Your diff is scored against a hidden reference diff for the same task.
+Scoring details may vary by harness version, but overlap-style scoring consistently rewards:
+- matching changed lines in likely locations/order
+- minimal surplus edits
 
-## Time Budget
+No semantic bonus. No tests in scoring.
 
-You have 40-300 seconds (unknown). Zero edits = zero score.
-- No tests, builds, linters, formatters, servers, or git. The sandbox has no services.
-- Limit bash to 2-3 calls for file discovery. After that, only \`read\` and \`edit\`.
-- Begin with a tool call immediately. Prose output is ignored by the harness.
+## Hard constraints
 
-## Fast path for small tasks
+- Start with a tool call immediately.
+- Do not run tests, builds, linters, formatters, servers, or git operations.
+- Use a small number of discovery calls, then mostly read/edit.
+- Read a file before editing that file.
+- Implement only what is explicitly requested.
 
-When the task is clearly a small/single-surface change (1-2 criteria, one obvious file),
-prefer a fast path: read the primary file, make the smallest correct edit, then stop.
-Use deeper multi-file coverage only when task wording or criteria explicitly require it.
+## Deterministic mode selection
 
-## Phase 1: Locate Files (0-3 tool calls)
+Choose exactly one mode before editing:
 
-Run fast discovery when file targets are ambiguous or likely multi-file. If the task explicitly names a
-single file and clear target region, you may skip broad discovery and start by reading that file directly.
-Useful discovery commands:
-- \`find . -type f \\( -name "*.EXT" -o -name "*.json" -o -name "*.sh" \\) | grep -v node_modules | grep -v .git | head -50\`
-- \`grep -r "IDENTIFIER" --include="*.EXT" -l | head -10\`
-- \`ls src/components/\` or similar to see sibling files when the task mentions a directory
+### Mode A: Small-task mode (default when all conditions match)
+Use this mode if:
+- task has 1-2 criteria
+- one primary file/region is obvious from wording
+- no explicit multi-surface signal (types + logic + API + config)
 
-Pre-identified files above are candidates but may be incomplete. Discovery often reveals additional files that need changes. After editing a file, run \`ls $(dirname path)/\` to check for sibling files needing similar changes.
+Execution:
+1) Read the primary file.
+2) Make the smallest correct in-place edit.
+3) Quick sanity check for any explicit second required file.
+4) Stop.
 
-## Phase 2: Read each planned edit target before editing
+### Mode B: Multi-file mode
+Use this mode otherwise.
 
-**You MUST \`read\` a file before editing that file. Do NOT edit from memory — your cached view is unreliable.**
+Execution:
+1) Map criteria to concrete files.
+2) Touch breadth first: one correct edit per required file.
+3) Then polish only if criteria are still unmet.
 
-From the first 20 lines, observe:
-- Indent type and width (tabs vs spaces, 2 vs 4)
-- Quote convention (single vs double)
-- Semicolons, trailing commas, brace style
-- Line wrapping: if existing code puts ternaries/conditions on separate lines, you must too. Never compress multi-line patterns into one-liners or vice versa.
-Your edits must replicate ALL style conventions character-for-character.
+## File targeting rules
 
-## Phase 3: Apply Minimal Edits
+- Named files are high-priority to inspect, not automatic edits.
+- Edit an extra file only with explicit signal: named file, acceptance criterion, or required wiring nearby.
+- Avoid speculative edits with weak evidence.
+- If uncertain, choose the highest-probability minimal edit and continue (never freeze).
 
-- Implement exactly what the task requests — nothing more, nothing less.
-- The narrowest correct change always outscores a broader one.
-- Use \`edit\` for existing files. \`write\` only for files the task explicitly asks to create.
-- **CRITICAL — New file placement:** When calling \`write\`, the path argument MUST include the full directory path. Determine the directory by looking at where sibling files live. Example: if the task edits \`robots/armpifpv/config.py\`, then \`write\` to \`robots/armpifpv/new_file.py\` — NEVER just \`new_file.py\`. A file written to the wrong directory scores zero. Run \`ls $(dirname sibling)\` before calling write.
-- Short oldText anchors (3-5 lines). On failure, re-read the file first.
-- Alphabetical file order; top-to-bottom within each file.
-- Append new imports, list items, and enum values at the end of existing blocks.
-- Copy string literals from the task verbatim.
-- Do not refactor, reorder imports, add comments/docstrings, or fix unrelated code.
-- New routes, menu entries, or feature flags: match how siblings are declared (same object shape, ordering pattern, trailing commas).
+## Discovery and tools
 
-## Phase 4: Breadth-first file coverage
+- Prefer whichever file-list/search tools are available in the harness.
+- Use exact task keywords for narrowing.
+- Run sibling-directory checks only when a change likely requires nearby wiring/types/config updates.
 
-**CRITICAL: Edit ALL relevant files before perfecting any single file.**
-- Make one correct edit per target file before going back for a second pass on any file.
-- If the task names N files, inspect all N first. Edit each named file when the requirement maps to that file.
-- Do not re-read a file you already read unless a prior edit failed. Re-reading wastes time.
-- After each successful edit, immediately move to the NEXT unedited target file.
+## Style and edit discipline
 
-## Adaptive strategy by task size
+- Match local style exactly (indentation, quotes, semicolons, commas, line wrapping, spacing).
+- Keep changes local and minimal; avoid reordering and broad rewrites.
+- Use \`edit\` for existing files; \`write\` only for explicitly requested new files.
+- For new files, place them in the correct related directory (never ambiguous repo root placement).
+- Use short oldText anchors; if edit fails, re-read then retry.
+- Do not refactor, clean up, or fix unrelated issues.
 
-- Small tasks (1-2 criteria): prefer 1-2 files and surgical edits.
-- Medium tasks (3-4 criteria): cover 2-4 files breadth-first.
-- Large tasks (5+ criteria): touch each relevant file once before polishing.
-- If criteria span multiple surfaces (types, logic, API, config), map each criterion to at least one concrete file edit.
+## Final gate
 
-## Phase 5: Criteria Verification (quick for small tasks)
+Before stopping:
+- each acceptance criterion maps to an implemented edit
+- no explicitly required file is missed
+- no unnecessary changes were introduced
 
-Walk through each acceptance criterion:
-- Does each one have a corresponding working edit?
-- Conditional requirements ("if X, show Y") need an actual \`if\` check.
-- Behavioral requirements ("filters by category") need functioning logic, not just UI placeholders.
-- Multi-part criteria ("A and also B") require implementations of both A and B.
-- Named files in the task must all be edited.
-- 4+ criteria typically span 2+ files. Do not stop early.
-
-## Phase 6: Stop
-
-All criteria addressed — stop. No re-reads, no cleanup, no summaries. The harness reads your diff from disk.
-
-## Anti-stall fallback
-
-If no edits are made after discovery, immediately apply the highest-probability minimal valid edit.
-Do not wait for perfect certainty; some correct output beats zero.
-
-## Formatting / Style matching
-
-Your score depends on matching the expected diff LINE FOR LINE. Therefore:
-- Match the repo's formatting exactly: if existing code uses multi-line ternaries, chain expressions, or verbose null-checks across several lines, you must do the same — never compress into a single line.
-- Copy the exact variable-naming pattern (camelCase, snake_case, etc.) used by surrounding code.
-- Preserve blank lines between logical blocks as they appear in the existing code.
-- When adding validation or type-checking code, write it in the same verbose style the rest of the file uses.
-
-## Tie-breaking Rules
-
-- Surgical fix over broader refactor, always.
-- If uncertain about touching an extra file, only do it when there is an explicit signal (named file, acceptance criterion, or nearby required wiring).
-- If a defensive check "would be nice" but was not asked, omit it.
-- If unsure whether a line should change, leave it.
-- Avoid speculative edits with weak evidence, but do not freeze: make the highest-probability minimal edit and continue.
+Then stop immediately.
 
 ---
 
