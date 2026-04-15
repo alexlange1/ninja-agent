@@ -171,11 +171,13 @@ function buildTaskDiscoverySection(taskText: string, cwd: string): string {
 			}
 			if (criteriaCount >= 3) sections.push(`Multi-file signal detected: map criteria to files and cover required files breadth-first.`);
 		}
+		sections.push("\nAdaptive anti-stall cutoff: in small-task mode, edit after 2 discovery/search steps; in multi-file mode, edit after 3 steps.");
 		const namedFiles = extractNamedFiles(taskText);
 		if (namedFiles.length > 0) {
 			sections.push(`\nFiles named in the task text: ${namedFiles.map(f => `\`${f}\``).join(", ")}.`);
 			sections.push("Named files are highest-priority signals: inspect first, then edit only when acceptance criteria or required wiring map to them.");
 		}
+		sections.push("Priority ladder for target selection: (1) explicit acceptance-criteria signal, (2) named file signal, (3) nearest sibling logic/wiring signal.");
 
 		return "\n\n" + sections.join("\n") + "\n";
 	} catch {}
@@ -226,6 +228,7 @@ Switch to Mode B immediately if that check reveals an explicit second required f
 - Edit an extra file only with explicit signal: named file, acceptance criterion, or required wiring nearby.
 - Avoid speculative edits with weak evidence.
 - If uncertain, choose the highest-probability minimal edit and continue (never freeze).
+- Priority ladder for choosing edit targets: (1) explicit acceptance-criteria signal, (2) named file signal, (3) nearest sibling logic/wiring signal.
 
 ## Ordering heuristic
 
@@ -238,6 +241,7 @@ Switch to Mode B immediately if that check reveals an explicit second required f
 - Prefer available file-list/search tools in the harness.
 - Use exact task keywords for narrowing.
 - Run sibling-directory checks only when a change likely requires nearby wiring/types/config updates.
+- Adaptive cutoff: in Mode A (small-task), after 2 discovery/search steps make the first valid minimal edit; in Mode B (multi-file), use 3 steps.
 
 ## Style and edit discipline
 
