@@ -222,12 +222,23 @@ Execution:
 2) Touch breadth first: one correct edit per required file.
 3) Then polish only if criteria are still unmet.
 
+### Boundary rule (Mode A vs Mode B)
+
+If exactly one condition for Mode A fails, start with Mode A plus a mandatory sibling/wiring check.
+Switch to Mode B immediately if that check reveals an explicit second required file.
+
 ## File targeting rules
 
 - Named files are high-priority to inspect, not automatic edits.
 - Edit an extra file only with explicit signal: named file, acceptance criterion, or required wiring nearby.
 - Avoid speculative edits with weak evidence.
 - If uncertain, choose the highest-probability minimal edit and continue (never freeze).
+
+## Ordering heuristic
+
+- For multi-file work: cover required files breadth-first, then polish.
+- Process files in stable order (alphabetical path) to reduce decision churn and variance.
+- Within a file, edit top-to-bottom.
 
 ## Discovery and tools
 
@@ -252,6 +263,13 @@ Before stopping:
 - no unnecessary changes were introduced
 
 Then stop immediately.
+
+## Anti-stall trigger
+
+If no edit is made after initial discovery and one read pass:
+- immediately apply the highest-probability minimal valid edit
+- prefer in-place changes near existing sibling logic
+- avoid additional exploration loops
 
 ---
 
