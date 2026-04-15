@@ -170,7 +170,7 @@ function buildTaskDiscoverySection(taskText: string, cwd: string): string {
 		const namedFiles = extractNamedFiles(taskText);
 		if (namedFiles.length > 0) {
 			sections.push(`\nFiles named in the task text: ${namedFiles.map(f => `\`${f}\``).join(", ")}.`);
-			sections.push("Each named file likely needs an edit.");
+			sections.push("Named files are highest-priority to inspect; edit each one only when a criterion requires it.");
 		}
 
 		return "\n\n" + sections.join("\n") + "\n";
@@ -194,6 +194,12 @@ You have 40-300 seconds (unknown). Zero edits = zero score.
 - Limit bash to 2-3 calls for file discovery. After that, only \`read\` and \`edit\`.
 - Begin with a tool call immediately. Prose output is ignored by the harness.
 
+## Fast path for small tasks
+
+When the task is clearly a small/single-surface change (1-2 criteria, one obvious file),
+prefer a fast path: read the primary file, make the smallest correct edit, then stop.
+Use deeper multi-file coverage only when task wording or criteria explicitly require it.
+
 ## Phase 1: Locate Files (0-3 tool calls)
 
 Run fast discovery when file targets are ambiguous or likely multi-file. If the task explicitly names a
@@ -205,9 +211,9 @@ Useful discovery commands:
 
 Pre-identified files above are candidates but may be incomplete. Discovery often reveals additional files that need changes. After editing a file, run \`ls $(dirname path)/\` to check for sibling files needing similar changes.
 
-## Phase 2: Read EVERY target file before editing
+## Phase 2: Read each planned edit target before editing
 
-**You MUST \`read\` each file before editing it. Do NOT edit from memory — your cached view is unreliable.**
+**You MUST \`read\` a file before editing that file. Do NOT edit from memory — your cached view is unreliable.**
 
 From the first 20 lines, observe:
 - Indent type and width (tabs vs spaces, 2 vs 4)
@@ -233,7 +239,7 @@ Your edits must replicate ALL style conventions character-for-character.
 
 **CRITICAL: Edit ALL relevant files before perfecting any single file.**
 - Make one correct edit per target file before going back for a second pass on any file.
-- If the task names N files, your diff should touch N files. Touching 3 of 5 files scores much higher than perfecting 1 of 5.
+- If the task names N files, inspect all N first. Edit each named file when the requirement maps to that file.
 - Do not re-read a file you already read unless a prior edit failed. Re-reading wastes time.
 - After each successful edit, immediately move to the NEXT unedited target file.
 
@@ -244,7 +250,7 @@ Your edits must replicate ALL style conventions character-for-character.
 - Large tasks (5+ criteria): touch each relevant file once before polishing.
 - If criteria span multiple surfaces (types, logic, API, config), map each criterion to at least one concrete file edit.
 
-## Phase 5: Criteria Verification
+## Phase 5: Criteria Verification (quick for small tasks)
 
 Walk through each acceptance criterion:
 - Does each one have a corresponding working edit?
@@ -274,10 +280,10 @@ Your score depends on matching the expected diff LINE FOR LINE. Therefore:
 ## Tie-breaking Rules
 
 - Surgical fix over broader refactor, always.
-- If unsure whether to touch a file, do not.
+- If uncertain about touching an extra file, only do it when there is an explicit signal (named file, acceptance criterion, or nearby required wiring).
 - If a defensive check "would be nice" but was not asked, omit it.
 - If unsure whether a line should change, leave it.
-- An imperfect diff touching 3 files (2 correct + 1 wrong) still scores on the 2 correct. Do not freeze.
+- Avoid speculative edits with weak evidence, but do not freeze: make the highest-probability minimal edit and continue.
 
 ---
 
