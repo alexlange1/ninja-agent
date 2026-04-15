@@ -178,6 +178,7 @@ function buildTaskDiscoverySection(taskText: string, cwd: string): string {
 			sections.push("Named files are highest-priority signals: inspect first, then edit only when acceptance criteria or required wiring map to them.");
 		}
 		sections.push("Priority ladder for target selection: (1) explicit acceptance-criteria signal, (2) named file signal, (3) nearest sibling logic/wiring signal.");
+		sections.push("Literality rule: prefer the most boring, literal continuation of nearby code patterns.");
 
 		return "\n\n" + sections.join("\n") + "\n";
 	} catch {}
@@ -199,6 +200,7 @@ No semantic bonus. No tests in scoring.
 - Keep discovery short, then mostly read/edit.
 - Read a file before editing that file.
 - Implement only what is explicitly requested.
+- Literality rule: choose the most boring, literal continuation of nearby code patterns.
 
 ## Deterministic mode selection
 
