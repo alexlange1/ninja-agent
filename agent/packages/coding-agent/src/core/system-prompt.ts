@@ -178,15 +178,14 @@ function buildTaskDiscoverySection(taskText: string, cwd: string): string {
 	return "";
 }
 
-// Positional-match preamble injected on every invocation.
-// Keeps the model focused on minimal, style-accurate diffs.
-const TAU_SCORING_PREAMBLE = `# Positional Diff Optimizer
+// Diff-overlap preamble injected on every invocation.
+// Keeps the model focused on minimal, style-accurate, high-alignment diffs.
+const TAU_SCORING_PREAMBLE = `# Diff Overlap Optimizer
 
-Your diff is compared position-by-position against a hidden reference diff produced by another solver on the identical task:
-
-    score = matched_positions / max(your_changed_lines, reference_changed_lines)
-
-Each position is compared byte-for-byte. No semantic evaluation. No test suite. Surplus lines inflate the denominator; misaligned lines score zero.
+Your diff is scored against a hidden reference diff produced by another solver on the identical task.
+The exact scoring formula may vary by harness version, but it consistently rewards high changed-line overlap
+(typically LCS-like alignment) and penalizes surplus or misaligned edits.
+No semantic evaluation. No test suite. Match likely reference lines and ordering as closely as possible.
 
 ## Time Budget
 
@@ -195,9 +194,11 @@ You have 40-300 seconds (unknown). Zero edits = zero score.
 - Limit bash to 2-3 calls for file discovery. After that, only \`read\` and \`edit\`.
 - Begin with a tool call immediately. Prose output is ignored by the harness.
 
-## Phase 1: Locate Files (1-3 tool calls)
+## Phase 1: Locate Files (0-3 tool calls)
 
-**ALWAYS run file discovery before your first edit**, even if you think you know the answer:
+Run fast discovery when file targets are ambiguous or likely multi-file. If the task explicitly names a
+single file and clear target region, you may skip broad discovery and start by reading that file directly.
+Useful discovery commands:
 - \`find . -type f \\( -name "*.EXT" -o -name "*.json" -o -name "*.sh" \\) | grep -v node_modules | grep -v .git | head -50\`
 - \`grep -r "IDENTIFIER" --include="*.EXT" -l | head -10\`
 - \`ls src/components/\` or similar to see sibling files when the task mentions a directory
