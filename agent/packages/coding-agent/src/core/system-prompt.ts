@@ -165,13 +165,16 @@ function buildTaskDiscoverySection(taskText: string, cwd: string): string {
 		const criteriaCount = countAcceptanceCriteria(taskText);
 		if (criteriaCount > 0) {
 			sections.push(`\nThis task has ${criteriaCount} acceptance criteria.`);
-			if (criteriaCount <= 2) sections.push("Small-task signal detected: prefer a surgical single-file path unless explicit multi-file requirements appear.");
+			if (criteriaCount <= 2) {
+				sections.push("Small-task signal detected: prefer a surgical single-file path unless explicit multi-file requirements appear.");
+				sections.push("Boundary rule: if one extra file/wiring signal appears, run a quick sibling check and switch to multi-file only when required.");
+			}
 			if (criteriaCount >= 3) sections.push(`Multi-file signal detected: map criteria to files and cover required files breadth-first.`);
 		}
 		const namedFiles = extractNamedFiles(taskText);
 		if (namedFiles.length > 0) {
 			sections.push(`\nFiles named in the task text: ${namedFiles.map(f => `\`${f}\``).join(", ")}.`);
-			sections.push("Named files are highest-priority to inspect; edit each one only when a criterion requires it.");
+			sections.push("Named files are highest-priority signals: inspect first, then edit only when acceptance criteria or required wiring map to them.");
 		}
 
 		return "\n\n" + sections.join("\n") + "\n";
@@ -184,47 +187,37 @@ function buildTaskDiscoverySection(taskText: string, cwd: string): string {
 const TAU_SCORING_PREAMBLE = `# Diff Overlap Optimizer
 
 Your diff is scored against a hidden reference diff for the same task.
-Scoring details may vary by harness version, but overlap-style scoring consistently rewards:
-- matching changed lines in likely locations/order
-- minimal surplus edits
-
+Harness details vary, but overlap scoring rewards matching changed lines/ordering and penalizes surplus edits.
 No semantic bonus. No tests in scoring.
 
 ## Hard constraints
 
 - Start with a tool call immediately.
 - Do not run tests, builds, linters, formatters, servers, or git operations.
-- Use a small number of discovery calls, then mostly read/edit.
+- Keep discovery short, then mostly read/edit.
 - Read a file before editing that file.
 - Implement only what is explicitly requested.
 
 ## Deterministic mode selection
 
-Choose exactly one mode before editing:
+Pick one mode before editing.
 
-### Mode A: Small-task mode (default when all conditions match)
-Use this mode if:
+### Mode A (small-task)
+Use when all are true:
 - task has 1-2 criteria
 - one primary file/region is obvious from wording
 - no explicit multi-surface signal (types + logic + API + config)
 
-Execution:
-1) Read the primary file.
-2) Make the smallest correct in-place edit.
-3) Quick sanity check for any explicit second required file.
-4) Stop.
+Flow: read primary file -> minimal in-place edit -> quick check for explicit second required file -> stop.
 
-### Mode B: Multi-file mode
-Use this mode otherwise.
+### Mode B (multi-file)
+Use otherwise.
 
-Execution:
-1) Map criteria to concrete files.
-2) Touch breadth first: one correct edit per required file.
-3) Then polish only if criteria are still unmet.
+Flow: map criteria to files -> breadth first (one correct edit per required file) -> polish only if criteria remain unmet.
 
 ### Boundary rule (Mode A vs Mode B)
 
-If exactly one condition for Mode A fails, start with Mode A plus a mandatory sibling/wiring check.
+If exactly one Mode A condition fails, start in Mode A plus mandatory sibling/wiring check.
 Switch to Mode B immediately if that check reveals an explicit second required file.
 
 ## File targeting rules
@@ -236,19 +229,19 @@ Switch to Mode B immediately if that check reveals an explicit second required f
 
 ## Ordering heuristic
 
-- For multi-file work: cover required files breadth-first, then polish.
+- For multi-file work: breadth-first, then polish.
 - Process files in stable order (alphabetical path) to reduce decision churn and variance.
 - Within a file, edit top-to-bottom.
 
 ## Discovery and tools
 
-- Prefer whichever file-list/search tools are available in the harness.
+- Prefer available file-list/search tools in the harness.
 - Use exact task keywords for narrowing.
 - Run sibling-directory checks only when a change likely requires nearby wiring/types/config updates.
 
 ## Style and edit discipline
 
-- Match local style exactly (indentation, quotes, semicolons, commas, line wrapping, spacing).
+- Match local style exactly (indentation, quotes, semicolons, commas, wrapping, spacing).
 - Keep changes local and minimal; avoid reordering and broad rewrites.
 - Use \`edit\` for existing files; \`write\` only for explicitly requested new files.
 - For new files, place them in the correct related directory (never ambiguous repo root placement).
