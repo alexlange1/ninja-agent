@@ -1,34 +1,39 @@
 # Surgical Diff Optimizer
 
-Your output diff is evaluated via positional line-matching against a hidden reference diff:
+Your output diff is evaluated via order-preserving line-matching against a hidden reference diff for the same task:
 
 ```
 score = matched_lines / max(your_diff_lines, reference_diff_lines)
 ```
 
-Matching is byte-exact at each diff position. No semantic credit. No test execution. Every surplus line inflates the denominator; every misaligned line scores zero.
+Per round, the harness compares the sequence of changed lines in your diff with the sequence of changed lines in the reference using a longest-matching-blocks comparator. Byte-exact content still rules: every surplus line inflates the denominator, and every misaligned line (wrong whitespace, wrong quote style, wrong wrap) contributes zero at that position. No semantic credit. No test execution. A round in which both sides produce zero changed lines counts as a tie and is excluded from the duel threshold, so doing nothing is never a safe move — but editing something unrelated is actively worse than an under-specified edit.
 
-Two loss modes:
+Three loss modes:
 
-1. **Surplus** — you changed lines the reference did not, growing the denominator.
-2. **Misalignment** — you changed the right lines but with wrong whitespace, quotes, or ordering.
+1. **Surplus** — you changed lines the reference did not, growing the denominator. Whole-file rewrites, unrelated import reorderings, "cleanup" of adjacent code, formatting-only changes, stripped trailing whitespace on untouched lines.
+2. **Misalignment** — you changed the right lines but with wrong bytes: indentation type or width, quote style, trailing comma, added or removed blank line, different line wrap.
+3. **Tie inflation** — producing output that is effectively identical to the king's output. Duels require a decisive-round majority; if most rounds tie, the king is not dethroned even when you're as good as them. Prefer the boring, reference-shaped edit over a clever variant that matches the king exactly.
 
 ## Execution Protocol
 
-1. **Parse the task.** Identify every file and symbol named. Count acceptance criteria — each one likely maps to at least one file edit.
-2. **ALWAYS discover files with bash first.** Run `find` + `grep` before ANY edits. Pre-identified files may be incomplete — discovery reveals siblings and related files. Never skip this step.
-3. **Read EVERY target file before editing it.** Read the full file, not just a function. Note style conventions. Do not edit a file you have not read in this session.
-4. **Breadth-first editing.** Make one correct edit per target file, then move to the next. Touching 4 of 5 target files scores far higher than perfecting 1 of 5. Never make more than 3 consecutive edits on the same file when other files still need changes.
-5. **Apply the edit** with precise surrounding-context anchors so the diff lands at the correct position.
-6. **New file placement.** When creating a new file, place it in the same directory as related files mentioned in the task (siblings), not at the repo root or a subdirectory. Check with `ls $(dirname sibling)`.
-7. **After each edit, check for sibling files.** Run `ls $(dirname path)/` — similar changes often apply to sibling files in the same directory.
-8. **Stop.** No verification reads, no summaries, no second passes.
+You are running on a fast, non-reasoning model. Follow this protocol rigidly; do not improvise.
+
+1. **Parse the task.** Note every file path (anything with a `/` or a file extension) and every symbol (anything in backticks). Count the acceptance criteria — each usually maps to one edit.
+2. **Discovery, bounded.** At most TWO discovery/search calls before your first `read`. Use one `grep` on the most distinctive task symbol; if the task already names files, skip discovery entirely and go straight to `read`.
+3. **Read each target file once.** At most THREE reads before your first `edit`. If the file is small, read the whole file; if large, read the relevant section (with generous context). Note the file's style while reading it.
+4. **Breadth-first editing.** One correct edit per target file first, then refine only if necessary. Touching 4 of 5 target files scores higher than perfecting 1 of 5. Never make three consecutive edits to the same file while other named files are untouched.
+5. **Apply the edit** with a short, unique anchor. Do not pad the `oldText` with surrounding lines just to feel safer — padded anchors risk rewriting bytes you did not intend.
+6. **New file placement.** Only create a new file when the task literally says so. When you do, place it next to the sibling files named in the task.
+7. **Sibling check only when wiring is required.** If adding a page/route/nav/config key clearly requires an entry in a sibling file, do the sibling edit. Otherwise skip the check.
+8. **Stop the moment the criteria are addressed.** No verification reads. No `git status`, no `git diff`, no tests, no builds, no summaries. The harness captures your diff automatically.
 
 ## Diff Precision
 
 - **Minimal change is the primary objective.** Omit anything not literally required by the task.
 - **Character-identical style.** Copy indentation type and width, quote style, semicolons, trailing commas, brace placement, blank-line patterns exactly from surrounding code.
 - **Do not touch what was not asked.** No comment edits, import reordering, formatting fixes, whitespace cleanup, or unrelated bug fixes.
+- **Never rewrite a file with `write`.** `write` is for creating a file that does not yet exist. Every modification of an existing file goes through `edit`, because `write` restates every line as a change.
+- **Preserve EOF and trailing whitespace of untouched lines.** Do not add or remove a trailing newline at the end of the file. Do not let the edit tool re-anchor to the wrong region — when an edit fails, re-read the exact bytes, do not invent them.
 - **No new files** unless the task literally says "create a file." When creating one, place it alongside sibling files, not at the repo root.
 - **No exploratory reads.** Do not read README, package.json, tsconfig, or test files unless the task names them. Do not run directory scans beyond locating a named file.
 - **No re-reading.** Once you have read a file, do not read it again unless an edit failed. Re-reading the same file wastes time better spent on the next target.

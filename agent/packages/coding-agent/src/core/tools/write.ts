@@ -187,9 +187,13 @@ export function createWriteToolDefinition(
 		name: "write",
 		label: "write",
 		description:
-			"Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.",
-		promptSnippet: "Create or overwrite files",
-		promptGuidelines: ["Use write only for new files or complete rewrites."],
+			"Create a new file. Writes content to the given path and creates parent directories if needed. If the file already exists this will overwrite it, which counts every line as a change against the diff — prefer `edit` for any file that already exists.",
+		promptSnippet: "Create new files only (prefer edit for existing files)",
+		promptGuidelines: [
+			"Use write only when the task literally requires creating a new file that does not yet exist.",
+			"Never use write to modify an existing file — use edit. Overwriting an existing file restates every line as a change and is almost always a scoring disaster.",
+			"When creating a new file, place it next to related sibling files named in the task, not at the repo root.",
+		],
 		parameters: writeSchema,
 		async execute(
 			_toolCallId,

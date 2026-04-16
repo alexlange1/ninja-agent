@@ -166,109 +166,114 @@ function buildTaskDiscoverySection(taskText: string, cwd: string): string {
 		if (criteriaCount > 0) {
 			sections.push(`\nThis task has ${criteriaCount} acceptance criteria.`);
 			if (criteriaCount <= 2) {
-				sections.push("Small-task signal detected: prefer a surgical single-file path unless explicit multi-file requirements appear.");
-				sections.push("Boundary rule: if one extra file/wiring signal appears, run a quick sibling check and switch to multi-file only when required.");
+				sections.push("Single-file mode: go straight to the most likely file, read it, make the minimal edit, stop. Do not scan for extra files.");
+			} else {
+				sections.push(`Multi-file mode: map each criterion to a file. Touch every criterion-mapped file with one correct edit before refining any of them.`);
 			}
-			if (criteriaCount >= 3) sections.push(`Multi-file signal detected: map criteria to files and cover required files breadth-first.`);
 		}
-		sections.push("\nAdaptive anti-stall cutoff: in small-task mode, edit after 2 discovery/search steps; in multi-file mode, edit after 3 steps.");
+		sections.push("\nHard budget: at most TWO discovery/search calls before the first read; at most THREE reads before the first edit. If you are still searching after two discovery calls, pick the best candidate and read it.");
 		const namedFiles = extractNamedFiles(taskText);
 		if (namedFiles.length > 0) {
 			sections.push(`\nFiles named in the task text: ${namedFiles.map(f => `\`${f}\``).join(", ")}.`);
-			sections.push("Named files are highest-priority signals: inspect first, then edit only when acceptance criteria or required wiring map to them.");
+			sections.push("Each named file gets one read and (usually) one edit. Do not skip any. Do not add unnamed files unless the task's wiring literally requires it.");
 		}
-		sections.push("Priority ladder for target selection: (1) explicit acceptance-criteria signal, (2) named file signal, (3) nearest sibling logic/wiring signal.");
-		sections.push("Literality rule: prefer the most boring, literal continuation of nearby code patterns.");
+		sections.push("Target-priority ladder: (1) files the task names literally, (2) the one symbol the task names, (3) the nearest sibling wiring.");
 
 		return "\n\n" + sections.join("\n") + "\n";
 	} catch {}
 	return "";
 }
 
-// Dual-mode diff-overlap preamble injected on every invocation.
-// Keeps the model focused on minimal, style-accurate, high-alignment edits.
-const TAU_SCORING_PREAMBLE = `# Diff Overlap Optimizer
+// Preamble tuned for the validator's enforced configuration:
+//   model: google/gemini-2.5-flash, reasoning: false
+//
+// Design principles:
+// - Front-load the non-negotiable rules. Flash weighs early tokens more.
+// - No chain-of-thought room — every rule must be directly actionable.
+// - Deterministic IF-THEN protocol rather than "pick a mode".
+// - Aggressive anti-narration (Flash wants to explain; we want tool calls).
+// - Tight tool-call budget so Flash doesn't thrash through exploration.
+const TAU_SCORING_PREAMBLE = `# Tau Diff-Overlap Protocol
 
-Your diff is scored against a hidden reference diff for the same task.
-Harness details vary, but overlap scoring rewards matching changed lines/ordering and penalizes surplus edits.
-No semantic bonus. No tests in scoring.
+You are editing a real repo. The harness takes the git diff of your edits
+and scores it line-for-line against a HIDDEN reference diff:
 
-## Hard constraints
+    score = matched_lines / max(your_changed_lines, reference_changed_lines)
 
-- Start with a tool call immediately.
-- Do not run tests, builds, linters, formatters, servers, or git operations.
-- Keep discovery short, then mostly read/edit.
-- Read a file before editing that file.
-- Implement only what is explicitly requested.
-- Literality rule: choose the most boring, literal continuation of nearby code patterns.
+Matching uses order-preserving longest-matching-blocks across the changed
+lines. No semantic credit. No tests. No points for explaining anything.
+A round in which both sides change 0 lines counts as a tie and is thrown
+out. Ties never dethrone the king, so doing nothing is not safe — making
+minimal, byte-exact edits that match the reference is.
 
-## Deterministic mode selection
+## The only way to lose
 
-Pick one mode before editing.
+1. **Surplus** — changing a line the reference didn't touch inflates the
+   denominator and drops the score. Whole-file rewrites, unrelated imports,
+   formatter-style tidying, blank-line additions, and "fix this too while
+   I'm here" all fall in this bucket.
+2. **Misalignment** — changing the right line with the wrong bytes.
+   Indentation, quote style, trailing comma, wrap point, added blank line.
+3. **Ties** — producing output that matches the king's output byte-for-byte
+   means neither side wins that round. Favor the most literal, textbook
+   reference-shaped edit, not a clever variant.
 
-### Mode A (small-task)
-Use when all are true:
-- task has 1-2 criteria
-- one primary file/region is obvious from wording
-- no explicit multi-surface signal (types + logic + API + config)
+## Non-negotiable rules (in priority order)
 
-Flow: read primary file -> minimal in-place edit -> quick check for explicit second required file -> stop.
+1. First response is a tool call. Never a plan, preamble, or summary.
+2. Never run tests, builds, linters, formatters, servers, git, or package
+   managers. None of them affect the score, all of them waste time.
+3. Read a file before you edit it. Never edit from memory.
+4. Use \`edit\` for every change to an existing file. Only use \`write\` to
+   create a file that does not yet exist. Overwriting an existing file
+   counts every line as changed and ruins the score.
+5. Preserve bytes you did not set out to change:
+   - keep indentation type and width exactly as the surrounding code
+   - keep quote style, semicolons, and trailing commas exactly
+   - do NOT strip trailing whitespace from lines you are not editing
+   - do NOT add or remove the file's final newline
+6. Make the smallest edit that satisfies the task literally. Omit anything
+   the task does not explicitly require.
+7. When the task names multiple files or criteria, touch each named file
+   with one correct edit before refining any of them. Breadth beats depth.
+8. Process multi-file work in alphabetical path order; within a file,
+   edit top-to-bottom. This stabilizes positions in the diff.
+9. Edit anchors (\`oldText\`) must be the smallest unique slice of the
+   original file that locates the edit. Do not pad with unchanged lines.
+10. No talking. No bullet summaries. No "I will now…". No post-edit
+    verification reads. Stop the moment the task is satisfied.
 
-### Mode B (multi-file)
-Use otherwise.
+## Tool-call protocol
 
-Flow: map criteria to files -> breadth first (one correct edit per required file) -> polish only if criteria remain unmet.
+Pick the minimal path from this decision tree on the VERY FIRST turn:
 
-### Boundary rule (Mode A vs Mode B)
+- Task explicitly names files (\`path/to/file.ts\` or \`feature.py\`)
+  → read each named file → edit each → stop.
+- Task names a symbol but no file (\`function foo\`, \`class Bar\`,
+  \`BASELINE_MODEL\`) → one \`grep\` / \`bash grep -r\` for that symbol
+  → read the top hit → edit → stop.
+- Task describes behavior with no hints
+  → one \`grep\` on the most distinctive phrase → read top hit → edit → stop.
 
-If exactly one Mode A condition fails, start in Mode A plus mandatory sibling/wiring check.
-Switch to Mode B immediately if that check reveals an explicit second required file.
+Budget: no more than TWO discovery calls (grep / find / ls / bash search)
+before the first \`read\`, and no more than THREE \`read\`s before the first
+\`edit\`. If you exceed either, you are overthinking — make the
+highest-probability minimal edit now and stop.
 
-## File targeting rules
+After all edits, STOP. Do not re-read. Do not summarize. Do not ask.
 
-- Named files are high-priority to inspect, not automatic edits.
-- Edit an extra file only with explicit signal: named file, acceptance criterion, or required wiring nearby.
-- Avoid speculative edits with weak evidence.
-- If uncertain, choose the highest-probability minimal edit and continue (never freeze).
-- Priority ladder for choosing edit targets: (1) explicit acceptance-criteria signal, (2) named file signal, (3) nearest sibling logic/wiring signal.
+## Anti-patterns (these all cost score)
 
-## Ordering heuristic
-
-- For multi-file work: breadth-first, then polish.
-- Process files in stable order (alphabetical path) to reduce decision churn and variance.
-- Within a file, edit top-to-bottom.
-
-## Discovery and tools
-
-- Prefer available file-list/search tools in the harness.
-- Use exact task keywords for narrowing.
-- Run sibling-directory checks only when a change likely requires nearby wiring/types/config updates.
-- Adaptive cutoff: in Mode A (small-task), after 2 discovery/search steps make the first valid minimal edit; in Mode B (multi-file), use 3 steps.
-
-## Style and edit discipline
-
-- Match local style exactly (indentation, quotes, semicolons, commas, wrapping, spacing).
-- Keep changes local and minimal; avoid reordering and broad rewrites.
-- Use \`edit\` for existing files; \`write\` only for explicitly requested new files.
-- For new files, place them in the correct related directory (never ambiguous repo root placement).
-- Use short oldText anchors; if edit fails, re-read then retry.
-- Do not refactor, clean up, or fix unrelated issues.
-
-## Final gate
-
-Before stopping:
-- each acceptance criterion maps to an implemented edit
-- no explicitly required file is missed
-- no unnecessary changes were introduced
-
-Then stop immediately.
-
-## Anti-stall trigger
-
-If no edit is made after initial discovery and one read pass:
-- immediately apply the highest-probability minimal valid edit
-- prefer in-place changes near existing sibling logic
-- avoid additional exploration loops
+- Reading README / package.json / tsconfig to "get context" — forbidden
+  unless the task names those files.
+- Reformatting adjacent code for "consistency".
+- Adding a comment that explains your change.
+- Adding a blank line to "separate" a new block.
+- Using \`write\` on any file that already exists.
+- Making a second edit to a file you already edited when other named
+  files still have no edit.
+- Running \`npm test\`, \`pytest\`, \`tsc\`, \`git status\`, \`git diff\`, or
+  any build command.
 
 ---
 

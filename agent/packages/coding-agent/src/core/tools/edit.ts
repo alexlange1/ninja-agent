@@ -25,9 +25,12 @@ const replaceEditSchema = Type.Object(
 	{
 		oldText: Type.String({
 			description:
-				"Exact text for one targeted replacement. It must be unique in the original file and must not overlap with any other edits[].oldText in the same call.",
+				"The exact, byte-identical slice of the original file to replace. Must be unique in the file. Must NOT overlap any other edits[].oldText in the same call. Keep it as small as possible while still being unique — do not pad with extra context lines, do not include the surrounding function/class body.",
 		}),
-		newText: Type.String({ description: "Replacement text for this targeted edit." }),
+		newText: Type.String({
+			description:
+				"The replacement text. Must use the same indentation style, width, quote style, trailing-comma style, and blank-line pattern as the surrounding code. Do not add explanatory comments. Do not reformat adjacent code.",
+		}),
 	},
 	{ additionalProperties: false },
 );
@@ -159,14 +162,14 @@ export function createEditToolDefinition(
 		name: "edit",
 		label: "edit",
 		description:
-			"Edit a single file using exact text replacement. Every edits[].oldText must match a unique, non-overlapping region of the original file. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. Do not include large unchanged regions just to connect distant changes.",
-		promptSnippet:
-			"Make precise file edits with exact text replacement, including multiple disjoint edits in one call",
+			"Edit a single file via exact text replacement. Every edits[].oldText must match a unique, non-overlapping region of the original file exactly, byte-for-byte. Merge nearby changes into a single edits[] entry rather than emitting overlapping edits. Do not include large unchanged regions just to connect distant changes — each oldText should be the smallest unique anchor that locates the change.",
+		promptSnippet: "Make precise byte-exact replacements in a file (batch multiple disjoint edits in one call)",
 		promptGuidelines: [
-			"Use edit for precise changes (edits[].oldText must match exactly)",
-			"When changing multiple separate locations in one file, use one edit call with multiple entries in edits[] instead of multiple edit calls",
-			"Each edits[].oldText is matched against the original file, not after earlier edits are applied. Do not emit overlapping or nested edits. Merge nearby changes into one edit.",
-			"Keep edits[].oldText as small as possible while still being unique in the file. Do not pad with large unchanged regions.",
+			"Use edit (never write) to modify any file that already exists.",
+			"When changing multiple separate locations in one file, pass them all in a single edit call via edits[], not multiple edit calls.",
+			"Every edits[].oldText is matched against the ORIGINAL file, not the file after earlier edits in the same call. Edits must not overlap or nest. Merge nearby changes into one edits[] entry.",
+			"Keep edits[].oldText as small as still-unique allows. Do not pad with surrounding lines. Padding risks accidentally rewriting unchanged lines and inflating the diff.",
+			"newText must match the surrounding file's indentation type and width, quote style, semicolons, trailing commas, and blank-line pattern. Do not reformat, do not add explanatory comments.",
 		],
 		parameters: editSchema,
 		prepareArguments: prepareEditArguments,
