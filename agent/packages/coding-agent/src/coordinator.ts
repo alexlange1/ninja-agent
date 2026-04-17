@@ -54,6 +54,11 @@
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+// ESM-safe __dirname equivalent. The package is compiled as "type": "module",
+// so the bare __dirname/__filename globals don't exist at runtime.
+const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
 import { formatLocalizationForPrompt, localize } from "./localization.js";
 import { formatPostProcessStats, runPostProcess } from "./post-process.js";
 import { formatShapeForPrompt, predictShape, type ShapePrediction } from "./shape-predictor.js";
@@ -100,19 +105,20 @@ function findBundledBinDir(): string | undefined {
 	const candidates: string[] = [];
 	const envAgentDir = process.env.TAU_AGENT_DIR ?? process.env.PI_AGENT_DIR;
 	if (envAgentDir) candidates.push(join(envAgentDir, "bin"));
-	// Walk up from this file: .../packages/coding-agent/src/ → agent/
-	// Both the src tsx path and the dist js path land us in a similar shape.
+	// Walk up from this compiled module: .../packages/coding-agent/dist/ → agent/
 	try {
-		let here = __dirname;
-		for (let i = 0; i < 6; i++) {
+		let here = MODULE_DIR;
+		for (let i = 0; i < 8; i++) {
 			const maybe = join(here, "bin");
 			if (existsSync(join(maybe, "fd")) || existsSync(join(maybe, "rg"))) {
 				candidates.push(maybe);
 			}
-			here = dirname(here);
+			const parent = dirname(here);
+			if (parent === here) break;
+			here = parent;
 		}
 	} catch {
-		// __dirname may not be defined under some ESM shapes — best-effort.
+		// Defensive: any path resolution error is non-fatal.
 	}
 	for (const c of candidates) {
 		if (existsSync(c)) return c;
@@ -134,11 +140,15 @@ function seedBundledBinaries(): void {
 	try {
 		const srcBin = findBundledBinDir();
 		if (!srcBin) return;
-		// Compute target bin dir: matches getBinDir() from config.ts →
-		// join(getAgentDir(), "bin"). getAgentDir falls back to
-		// `~/.pi/agent` when no env var overrides.
-		const targetRoot = process.env.PI_AGENT_DIR
-			? resolve(process.env.PI_AGENT_DIR)
+		// Compute target bin dir: must EXACTLY match getBinDir() from
+		// config.ts, which uses join(getAgentDir(), "bin") and reads the
+		// PI_CODING_AGENT_DIR env var. Inside the tau sandbox that is
+		// set to /work/tau-config, so seeding here makes getToolPath
+		// resolve fd/rg to /work/tau-config/bin on the FIRST tool call.
+		const codingAgentDir =
+			process.env.PI_CODING_AGENT_DIR ?? process.env.TAU_CODING_AGENT_DIR;
+		const targetRoot = codingAgentDir
+			? resolve(codingAgentDir)
 			: join(homedir(), ".pi", "agent");
 		const targetBin = join(targetRoot, "bin");
 		mkdirSync(targetBin, { recursive: true });
