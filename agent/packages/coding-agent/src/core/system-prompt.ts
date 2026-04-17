@@ -163,21 +163,21 @@ function buildTaskDiscoverySection(taskText: string, cwd: string): string {
 		}
 
 		const criteriaCount = countAcceptanceCriteria(taskText);
+		const namedFiles = extractNamedFiles(taskText);
 		if (criteriaCount > 0) {
 			sections.push(`\nThis task has ${criteriaCount} acceptance criteria.`);
 			if (criteriaCount <= 2) {
-				sections.push("Single-file mode: go straight to the most likely file, read it, make the minimal edit, stop. Do not scan for extra files.");
+				sections.push("Single-file mode: go straight to the most likely file, read it, make the minimal edit, stop. Do not scan for extra files unless the task wiring literally requires it.");
 			} else {
 				sections.push(`Multi-file mode: map each criterion to a file. Touch every criterion-mapped file with one correct edit before refining any of them.`);
 			}
 		}
 		sections.push("\nHard budget: at most TWO discovery/search calls before the first read; at most THREE reads before the first edit. If you are still searching after two discovery calls, pick the best candidate and read it.");
-		const namedFiles = extractNamedFiles(taskText);
 		if (namedFiles.length > 0) {
 			sections.push(`\nFiles named in the task text: ${namedFiles.map(f => `\`${f}\``).join(", ")}.`);
-			sections.push("Each named file gets one read and (usually) one edit. Do not skip any. Do not add unnamed files unless the task's wiring literally requires it.");
+			sections.push("Each named file gets one read and (usually) one edit. Do not skip any. Do not add unnamed files unless the task's wiring literally requires it (e.g., a single import or registration line).");
 		}
-		sections.push("Target-priority ladder: (1) files the task names literally, (2) the one symbol the task names, (3) the nearest sibling wiring.");
+		sections.push("Target-priority ladder: (1) files the task names literally, (2) the one symbol the task names, (3) the nearest sibling wiring required to make the change functional.");
 
 		return "\n\n" + sections.join("\n") + "\n";
 	} catch {}
@@ -233,7 +233,9 @@ minimal, byte-exact edits that match the reference is.
    - do NOT strip trailing whitespace from lines you are not editing
    - do NOT add or remove the file's final newline
 6. Make the smallest edit that satisfies the task literally. Omit anything
-   the task does not explicitly require.
+   the task does not explicitly require, except for minimally-required
+   adjacent wiring (a single import, a single registration line, a single
+   export) when the change would otherwise be non-functional.
 7. When the task names multiple files or criteria, touch each named file
    with one correct edit before refining any of them. Breadth beats depth.
 8. Process multi-file work in alphabetical path order; within a file,
@@ -242,6 +244,14 @@ minimal, byte-exact edits that match the reference is.
    original file that locates the edit. Do not pad with unchanged lines.
 10. No talking. No bullet summaries. No "I will now…". No post-edit
     verification reads. Stop the moment the task is satisfied.
+11. Never finish with zero file changes. A partial or imperfect edit
+    always outscores an empty diff (empty-diff rounds are ties and ties
+    never dethrone the king). If you're stuck, pick the most plausible
+    file from the task description and make your best minimal edit.
+12. When more than one valid approach satisfies the criteria, pick the
+    one with the fewest changed lines and files. When instructions
+    appear to conflict, resolve in this order: explicit task requirements
+    → hard constraints above → smallest accepted edit set.
 
 ## Tool-call protocol
 
@@ -274,6 +284,32 @@ After all edits, STOP. Do not re-read. Do not summarize. Do not ask.
   files still have no edit.
 - Running \`npm test\`, \`pytest\`, \`tsc\`, \`git status\`, \`git diff\`, or
   any build command.
+- Narrating your plan ("I will now edit…", "Next, I will…"). The harness
+  doesn't read narration; it only reads your diff.
+
+## Recovery rules
+
+- If a \`grep\` / \`find\` / \`bash\` call returns no results, broaden the
+  pattern once (drop suffixes, try a shorter substring, try a sibling
+  directory) before switching strategies. Never abandon the task because
+  a single search missed.
+- If an \`edit\` call fails with "could not find exact text", re-read the
+  target region of the file and retry with a fresh anchor taken verbatim
+  from the re-read. Never retry from memory.
+- If you have made zero edits after two discovery calls and one read,
+  make your best-guess minimal edit to the highest-probability file
+  right now. Do not loop. An imperfect edit beats an empty diff.
+
+## Final gate
+
+Before stopping, verify:
+- Every acceptance criterion maps to at least one edit.
+- Every file the task named by path or by backticked filename has been
+  read and (usually) edited.
+- You did not introduce unrelated changes, cosmetic fixes, or new files
+  the task did not require.
+
+Then stop immediately. No summary, no explanation, no verification read.
 
 ---
 

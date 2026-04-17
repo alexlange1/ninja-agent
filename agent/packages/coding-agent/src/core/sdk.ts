@@ -306,10 +306,26 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			if (!auth.ok) {
 				throw new Error(auth.error);
 			}
+			// When running as an ensemble child we want LOW per-child temperature so
+			// the N runs agree on the high-level decisions (which files to touch)
+			// while still diverging on subtle byte choices. The divergences get
+			// filtered by the parent's majority-vote consensus; the agreement on
+			// file selection is what lets us shrink surplus without killing score.
+			// Outside the ensemble we keep the pi-mono default (undefined) so
+			// Gemini Flash uses its normal distribution — that's also where our
+			// best single-shot mean overlap (0.127 in the v1 bench) lives.
+			const childTempEnv = process.env.NINJA_ENSEMBLE_CHILD === "1"
+				? process.env.NINJA_ENSEMBLE_CHILD_TEMPERATURE
+				: undefined;
+			const childTemp = childTempEnv !== undefined ? parseFloat(childTempEnv) : undefined;
+			const effectiveTemp =
+				options?.temperature ??
+				(childTemp !== undefined && Number.isFinite(childTemp) ? childTemp : undefined);
 			return streamSimple(model, context, {
 				...options,
 				apiKey: auth.apiKey,
 				headers: auth.headers || options?.headers ? { ...auth.headers, ...options?.headers } : undefined,
+				...(effectiveTemp !== undefined ? { temperature: effectiveTemp } : {}),
 			});
 		},
 		onPayload: async (payload, _model) => {

@@ -190,10 +190,56 @@ export function createFindToolDefinition(
 							return;
 						}
 
-						// Default implementation uses fd.
+						// Default implementation prefers fd. Fall back to a pure-Node glob
+						// scan when fd is unavailable (e.g. offline sandbox environments).
 						const fdPath = await ensureTool("fd", true);
 						if (!fdPath) {
-							reject(new Error("fd is not available and could not be downloaded"));
+							if (!existsSync(searchPath)) {
+								reject(new Error(`Path not found: ${searchPath}`));
+								return;
+							}
+							let fallbackResults: string[] = [];
+							try {
+								fallbackResults = globSync(pattern, {
+									cwd: searchPath,
+									dot: true,
+									nodir: false,
+									ignore: ["**/node_modules/**", "**/.git/**"],
+								}).slice(0, effectiveLimit);
+							} catch (err: any) {
+								reject(new Error(`Glob fallback failed: ${err?.message || err}`));
+								return;
+							}
+							signal?.removeEventListener("abort", onAbort);
+							if (fallbackResults.length === 0) {
+								resolve({
+									content: [{ type: "text", text: "No files found matching pattern" }],
+									details: undefined,
+								});
+								return;
+							}
+							const relativized = fallbackResults.map((p) => toPosixPath(p));
+							const resultLimitReached = relativized.length >= effectiveLimit;
+							const rawOutput = relativized.join("\n");
+							const truncation = truncateHead(rawOutput, { maxLines: Number.MAX_SAFE_INTEGER });
+							let resultOutput = truncation.content;
+							const details: FindToolDetails = {};
+							const notices: string[] = [];
+							if (resultLimitReached) {
+								notices.push(`${effectiveLimit} results limit reached`);
+								details.resultLimitReached = effectiveLimit;
+							}
+							if (truncation.truncated) {
+								notices.push(`${formatSize(DEFAULT_MAX_BYTES)} limit reached`);
+								details.truncation = truncation;
+							}
+							if (notices.length > 0) {
+								resultOutput += `\n\n[${notices.join(". ")}]`;
+							}
+							resolve({
+								content: [{ type: "text", text: resultOutput }],
+								details: Object.keys(details).length > 0 ? details : undefined,
+							});
 							return;
 						}
 

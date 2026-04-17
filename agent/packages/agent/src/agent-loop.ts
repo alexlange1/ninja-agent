@@ -165,7 +165,13 @@ async function runLoop(
 	let pendingMessages: AgentMessage[] = (await config.getSteeringMessages?.()) || [];
 
 	let upstreamRetries = 0;
-	const UPSTREAM_RETRY_LIMIT = 100;
+	// Lowered from 100 to 20. During SN66 bench runs we observed credit
+	// depletion and wedged-proxy scenarios where the agent would burn 100
+	// retries in a tight loop (1827 events of "Transient upstream failure"
+	// with 0 file edits), wasting duel budget and producing empty diffs.
+	// 20 retries still covers legitimate transient network blips (a few seconds
+	// of 5xx from OpenRouter) while capping the damage on terminal failures.
+	const UPSTREAM_RETRY_LIMIT = 20;
 
 	const editFailMap = new Map<string, number>();
 	const failNotified = new Set<string>();

@@ -199,24 +199,31 @@ export function stripBom(content: string): { bom: string; text: string } {
 }
 
 function getNotFoundError(path: string, editIndex: number, totalEdits: number): Error {
+	// When an edit anchor fails, the two highest-leverage next steps are:
+	//   1. re-read the exact region (agents often retry from memory and compound the error)
+	//   2. shrink the anchor to the smallest unique slice (giant anchors almost always
+	//      contain subtle whitespace or line-ending drift that breaks both exact and fuzzy match)
+	// The message is written to be directly actionable inside a tight Flash loop.
+	const recovery =
+		" Recovery: re-read the exact bytes around the target with `read`, then retry with a MUCH smaller oldText (1-5 lines, ideally the single line that must change). Do not retry from memory. Do not pad oldText with surrounding context.";
 	if (totalEdits === 1) {
 		return new Error(
-			`Could not find the exact text in ${path}. The old text must match exactly including all whitespace and newlines.`,
+			`Could not find the exact text in ${path}.` + recovery,
 		);
 	}
 	return new Error(
-		`Could not find edits[${editIndex}] in ${path}. The oldText must match exactly including all whitespace and newlines.`,
+		`Could not find edits[${editIndex}] in ${path}.` + recovery,
 	);
 }
 
 function getDuplicateError(path: string, editIndex: number, totalEdits: number, occurrences: number): Error {
 	if (totalEdits === 1) {
 		return new Error(
-			`Found ${occurrences} occurrences of the text in ${path}. The text must be unique. Please provide more context to make it unique.`,
+			`Found ${occurrences} occurrences of the text in ${path}. Add just enough context (one neighboring line) to make it unique. Do not add 5+ extra lines — a single adjacent identifier is usually enough.`,
 		);
 	}
 	return new Error(
-		`Found ${occurrences} occurrences of edits[${editIndex}] in ${path}. Each oldText must be unique. Please provide more context to make it unique.`,
+		`Found ${occurrences} occurrences of edits[${editIndex}] in ${path}. Add just enough context (one neighboring line) to make it unique. Each oldText should be as small as possible while still unique.`,
 	);
 }
 

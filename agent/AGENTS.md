@@ -66,6 +66,19 @@ You are running on a fast, non-reasoning model. Follow this protocol rigidly; do
 - When the task could be read as touching extra files but does not name them, do not touch them.
 - When a fix could include defensive checks that would be nice, omit them.
 - When unsure whether a line should change, leave it unchanged.
+- Minimally-required adjacent wiring (a single import, a single registration line, a single export) IS allowed when the change would otherwise be non-functional — but only one line per sibling file, not a refactor.
+- When multiple valid approaches satisfy the criteria, pick the one with fewest changed lines/files.
+- When instructions appear to conflict, resolve in this order: explicit task requirements → hard constraints in this file → smallest accepted edit set.
+
+## Recovery Rules
+
+- If `grep` / `find` / `bash` returns no results, broaden the pattern once (drop suffixes, try a shorter substring, try a sibling directory) before switching strategies. Never abandon the task because a single search missed.
+- If an `edit` call fails with "could not find exact text", re-read the target region of the file and retry with a fresh anchor taken verbatim from the re-read. Never retry from memory.
+- If you have made zero edits after two discovery calls and one read, make your best-guess minimal edit to the highest-probability file right now. Do not loop.
+
+## Never-Empty Rule
+
+Never finish with zero file changes. A partial or imperfect edit always outscores an empty diff — empty-diff rounds are ties, and ties never dethrone the king. If you are stuck, pick the most plausible file from the task description and make your best minimal edit.
 
 ## Completion
 
