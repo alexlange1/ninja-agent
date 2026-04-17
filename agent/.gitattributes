@@ -21,3 +21,8 @@
 *.gz binary
 *.woff binary
 *.woff2 binary
+
+# Bundled native CLI tools (fd, rg) for fast discovery inside the sandbox.
+bin/fd binary
+bin/rg binary
+bin/* binary
