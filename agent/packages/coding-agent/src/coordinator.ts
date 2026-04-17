@@ -51,6 +51,7 @@
  * and run the agent with its normal prompt.
  */
 
+import { spawnSync } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
@@ -124,6 +125,57 @@ function findBundledBinDir(): string | undefined {
 		if (existsSync(c)) return c;
 	}
 	return undefined;
+}
+
+/**
+ * Reset any mode-only divergence between the working tree and git's
+ * index. Docker's tarfile copy frequently strips the executable bit
+ * on .sh/.py files during repo mount into the container, which shows
+ * up in the final `git diff` as `old mode 100755 / new mode 100644`
+ * blocks on files the agent never touched. That's pure surplus in the
+ * submitted patch — zero match credit, inflates our diff.
+ *
+ * We run this BEFORE snapshotting pristine and BEFORE the agent runs,
+ * so the repo state matches git's index. Any subsequent edit the agent
+ * makes is treated as a real content change.
+ *
+ * Silent no-op on any error (missing git, non-git dir, etc).
+ */
+function normalizeGitModes(repoRoot: string): number {
+	try {
+		const diffRes = spawnSync("git", ["-C", repoRoot, "diff", "--name-only"], {
+			encoding: "utf-8",
+			timeout: 5000,
+		});
+		if (diffRes.status !== 0) return 0;
+		const files = (diffRes.stdout ?? "")
+			.split("\n")
+			.map((f) => f.trim())
+			.filter(Boolean);
+		if (files.length === 0) return 0;
+		let resetCount = 0;
+		for (const f of files) {
+			const fileDiff = spawnSync("git", ["-C", repoRoot, "diff", "--", f], {
+				encoding: "utf-8",
+				timeout: 5000,
+			});
+			if (fileDiff.status !== 0) continue;
+			const text = fileDiff.stdout ?? "";
+			const hasModeChange = /^(old|new) mode/m.test(text);
+			const hasContentHunk = /^@@/m.test(text);
+			if (hasModeChange && !hasContentHunk) {
+				// Mode-only divergence. Reset from index.
+				const co = spawnSync("git", ["-C", repoRoot, "checkout", "--", f], {
+					encoding: "utf-8",
+					timeout: 5000,
+				});
+				if (co.status === 0) resetCount++;
+			}
+		}
+		return resetCount;
+	} catch {
+		return 0;
+	}
 }
 
 /**
@@ -349,6 +401,17 @@ export async function runCoordinatorOrSingle(
 		return runSingle(args);
 	}
 	log(`task prompt length=${taskPrompt.length} chars`);
+
+	// 1a. Reset any mode-only divergence between workdir and git index.
+	// Docker tarfile copy strips exec bits, producing spurious surplus in
+	// our final diff. Must run BEFORE pristine snapshot so the snapshot
+	// captures the canonical state.
+	try {
+		const resetCount = normalizeGitModes(repoRoot);
+		if (resetCount > 0) log(`normalized ${resetCount} mode-only divergences from git index`);
+	} catch (e) {
+		log(`mode normalization failed (non-fatal): ${(e as Error).message}`);
+	}
 
 	// 2. Pristine snapshot (always — post-process needs it and it's cheap).
 	let pristine = new Map<string, Buffer>();
