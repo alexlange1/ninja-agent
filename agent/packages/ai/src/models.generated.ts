@@ -6828,9 +6828,9 @@ export const MODELS = {
 		"minimax-m2.5": {
 			id: "minimax-m2.5",
 			name: "MiniMax M2.5",
-			api: "anthropic-messages",
+			api: "openai-completions",
 			provider: "opencode-go",
-			baseUrl: "https://opencode.ai/zen/go",
+			baseUrl: "https://opencode.ai/zen/go/v1",
 			reasoning: true,
 			input: ["text"],
 			cost: {
@@ -6840,8 +6840,8 @@ export const MODELS = {
 				cacheWrite: 0,
 			},
 			contextWindow: 204800,
-			maxTokens: 131072,
-		} satisfies Model<"anthropic-messages">,
+			maxTokens: 65536,
+		} satisfies Model<"openai-completions">,
 		"minimax-m2.7": {
 			id: "minimax-m2.7",
 			name: "MiniMax M2.7",
@@ -7513,7 +7513,7 @@ export const MODELS = {
 			api: "openai-completions",
 			provider: "openrouter",
 			baseUrl: "https://openrouter.ai/api/v1",
-			reasoning: true,
+			reasoning: false,
 			input: ["text"],
 			cost: {
 				input: 0.19999999999999998,
@@ -7657,7 +7657,7 @@ export const MODELS = {
 				cacheRead: 0.024999999999999998,
 				cacheWrite: 0.08333333333333334,
 			},
-			contextWindow: 1048576,
+			contextWindow: 1000000,
 			maxTokens: 8192,
 		} satisfies Model<"openai-completions">,
 		"google/gemini-2.0-flash-lite-001": {
@@ -8609,7 +8609,7 @@ export const MODELS = {
 				cacheRead: 0.07,
 				cacheWrite: 0,
 			},
-			contextWindow: 256000,
+			contextWindow: 262144,
 			maxTokens: 4096,
 		} satisfies Model<"openai-completions">,
 		"nex-agi/deepseek-v3.1-nex-n1": {

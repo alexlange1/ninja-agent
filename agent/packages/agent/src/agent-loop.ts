@@ -3,6 +3,9 @@
  * Transforms to Message[] only at the LLM call boundary.
  */
 
+import { readdirSync, statSync } from "node:fs";
+import { dirname, extname, join } from "node:path";
+
 import {
 	type AssistantMessage,
 	type Context,
@@ -23,6 +26,72 @@ import type {
 } from "./types.js";
 
 export type AgentEventSink = (event: AgentEvent) => Promise<void> | void;
+
+/**
+ * After a successful edit, peek at the containing directory for sibling
+ * files that plausibly need the SAME shape of change. Returns a short
+ * hint string (or "") to append to the "edit succeeded" message.
+ *
+ * Patterns considered siblings: companion test files (*.test.*, *.spec.*,
+ * *_test.*), generated-code companions (*.freezed.*, *.g.*, *.generated.*,
+ * *.d.ts alongside a .ts), and same-extension neighbors in the same dir.
+ * All already-edited paths are excluded.
+ *
+ * The implementation is pure node:fs so it works in the same process as
+ * the agent and has no dependency on fd/rg/ls availability.
+ */
+function buildSiblingHint(editedPath: string, alreadyEdited: Set<string>): string {
+	try {
+		const dir = dirname(editedPath) || ".";
+		const base = editedPath.slice(dir.length + (dir === "." ? 0 : 1));
+		const ext = extname(base);
+		const stem = ext ? base.slice(0, -ext.length) : base;
+		const repoRoot = process.cwd();
+		const absDir = join(repoRoot, dir);
+		let entries: string[] = [];
+		try {
+			entries = readdirSync(absDir);
+		} catch {
+			return "";
+		}
+		const hits: string[] = [];
+		for (const name of entries) {
+			if (name === base) continue;
+			if (name.startsWith(".")) continue;
+			const rel = dir === "." ? name : `${dir}/${name}`;
+			// Skip anything already edited.
+			if (alreadyEdited.has(rel) || alreadyEdited.has(`./${rel}`)) continue;
+			try {
+				const st = statSync(join(absDir, name));
+				if (!st.isFile()) continue;
+			} catch {
+				continue;
+			}
+			const low = name.toLowerCase();
+			const isTest =
+				low.includes(".test.") ||
+				low.includes(".spec.") ||
+				low.includes("_test.") ||
+				low.startsWith("test_");
+			const isGenerated =
+				low.includes(".freezed.") ||
+				low.includes(".g.") ||
+				low.includes(".generated.") ||
+				low.endsWith(".d.ts");
+			const sameStem =
+				stem.length >= 3 && name.toLowerCase().startsWith(stem.toLowerCase() + ".");
+			const sameExt = ext && name.toLowerCase().endsWith(ext.toLowerCase()) && name !== base;
+			if (isTest || isGenerated || sameStem || sameExt) {
+				hits.push(rel);
+				if (hits.length >= 5) break;
+			}
+		}
+		if (hits.length === 0) return "";
+		return ` Sibling candidates in \`${dir === "." ? "./" : dir + "/"}\` you may also need to edit: ${hits.map((h) => `\`${h}\``).join(", ")}.`;
+	} catch {
+		return "";
+	}
+}
 
 /**
  * Start an agent loop with a new prompt message.
@@ -181,7 +250,11 @@ async function runLoop(
 	let explorationCount = 0;
 	let hasProducedEdit = false;
 	let emptyTurnRetries = 0;
-	const EMPTY_TURN_MAX = 2;
+	// v11d: bumped 2 → 3. We added a specialized recovery for the
+	// "narrate-instead-of-edit" Flash failure that eats ~150s of budget
+	// per turn; having one extra bite means a model that bungled its
+	// first two attempts still gets a final shot after the nudge.
+	const EMPTY_TURN_MAX = 3;
 
 	const loopStart = Date.now();
 	let earlyNudgeSent = false;
@@ -328,22 +401,44 @@ async function runLoop(
 			}
 			hasMoreToolCalls = toolCalls.length > 0;
 
+			// v11d: graceful bail-out for no-tool-call turns. If we're
+			// already past GRACEFUL_EXIT_MS and the model just emitted a
+			// narrate-only turn with no edits on disk, continuing will
+			// only waste more budget. Break out so the coordinator's
+			// emergency-retry path can run with wall-clock to spare.
+			if (!hasMoreToolCalls && !hasProducedEdit && (Date.now() - loopStart) >= GRACEFUL_EXIT_MS) {
+				await emit({ type: "turn_end", message, toolResults: [] });
+				await emit({ type: "agent_end", messages: newMessages });
+				return;
+			}
+
 			if (!hasMoreToolCalls && emptyTurnRetries < EMPTY_TURN_MAX) {
 				const tokenCapped = message.stopReason === "length";
 				const idleStopped = message.stopReason === "stop" && !hasProducedEdit;
-				if (tokenCapped || idleStopped) {
+				// v11d: estimate how much text the model just emitted. A
+				// verbose text-dump with NO tool call is the signature of
+				// the Flash "paste code as chat" failure mode — it eats
+				// ~150s on big files, then the hard deadline kills us
+				// with zero bytes on disk. When we detect this, we fire a
+				// sharper targeted nudge that calls out the specific
+				// behavior and tells the model to stop describing and
+				// start editing.
+				const textChars = message.content
+					.filter((c: any) => c?.type === "text" && typeof c.text === "string")
+					.reduce((sum: number, c: any) => sum + (c.text as string).length, 0);
+				const hugeNarration = textChars >= 3000;
+				if (tokenCapped || idleStopped || hugeNarration) {
 					emptyTurnRetries++;
 					await emit({ type: "turn_end", message, toolResults: [] });
+					const topCandidate = foundFiles[0] || [...pathsAlreadyRead][0] || "";
+					const recoveryText = hugeNarration
+						? `You just emitted ${textChars.toLocaleString()} characters of prose / pasted code and ZERO tool calls. That text is discarded — only files on disk count for score. STOP typing code into chat. Your next output MUST begin with a single \`edit\` or \`write\` tool call on ${topCandidate ? `\`${topCandidate}\`` : "the most plausible target file"}. No explanation. Just the call.`
+						: tokenCapped
+							? "Output budget consumed without any tool invocation. Invoke \`read\` or \`edit\` now. Text output contributes nothing to your score."
+							: "No file modifications detected. A blank diff receives zero points. Use \`read\` on the primary file, then \`edit\` it immediately.";
 					pendingMessages.push({
 						role: "user",
-						content: [
-							{
-								type: "text",
-								text: tokenCapped
-									? "Output budget consumed without any tool invocation. Invoke \`read\` or \`edit\` now. Text output contributes nothing to your score."
-									: "No file modifications detected. A blank diff receives zero points. Use \`read\` on the primary file, then \`edit\` it immediately.",
-							},
-						],
+						content: [{ type: "text", text: recoveryText }],
 						timestamp: Date.now(),
 					});
 					continue;
@@ -388,8 +483,46 @@ async function runLoop(
 						editFailMap.set(targetPath, count);
 						const anchorText = (tc.arguments as any)?.old_string ?? (tc.arguments as any)?.oldText ?? "";
 						const prevAnchor = priorFailedAnchor.get(targetPath);
-						if (anchorText && prevAnchor === anchorText && pendingMessages.length === 0) {
-							pendingMessages.push({ role: "user", content: [{ type: "text", text: `Identical oldText failed twice on \`${targetPath}\`. Use \`read\` to get fresh contents before retrying.` }], timestamp: Date.now() });
+						// v11d: targeted recovery hints based on the specific
+						// error text. Flash often fails edits repeatedly for
+						// three distinct reasons, each of which needs a
+						// different fix. Handing it a tailored hint shortens
+						// the failure loop and reduces empty-diff rounds.
+						const errText =
+							(tr.content ?? [])
+								.map((c: any) => (typeof c?.text === "string" ? c.text : ""))
+								.join("") || "";
+						if (pendingMessages.length === 0) {
+							if (/\b([2-9]|\d{2,})\s+occurrences?\b/.test(errText) || errText.includes("multiple matches")) {
+								pendingMessages.push({
+									role: "user",
+									content: [{
+										type: "text",
+										text: `The \`oldText\` anchor you sent to \`${targetPath}\` matches more than one location. Widen the anchor by including additional surrounding lines so it is unique, then retry. If you are unsure what surrounds the target, \`read\` the file and copy a 4–6 line anchor verbatim from there.`,
+									}],
+									timestamp: Date.now(),
+								});
+							} else if (/required property|Validation failed|schema|Invalid arguments/i.test(errText)) {
+								pendingMessages.push({
+									role: "user",
+									content: [{
+										type: "text",
+										text: `The \`edit\` call on \`${targetPath}\` failed schema validation. The expected shape is { "path": "<file>", "edits": [ { "oldText": "<verbatim from file>", "newText": "<replacement>" } ] }. Re-emit the call with that exact structure.`,
+									}],
+									timestamp: Date.now(),
+								});
+							} else if (/could not find|not found|no matching/i.test(errText) && !pathsAlreadyRead.has(targetPath)) {
+								pendingMessages.push({
+									role: "user",
+									content: [{
+										type: "text",
+										text: `\`edit\` on \`${targetPath}\` could not find the oldText anchor you supplied. You have not \`read\` this file yet — call \`read\` on \`${targetPath}\` and copy the exact text (indentation and whitespace included) before retrying.`,
+									}],
+									timestamp: Date.now(),
+								});
+							} else if (anchorText && prevAnchor === anchorText) {
+								pendingMessages.push({ role: "user", content: [{ type: "text", text: `Identical oldText failed twice on \`${targetPath}\`. Use \`read\` to get fresh contents before retrying.` }], timestamp: Date.now() });
+							}
 						}
 						priorFailedAnchor.set(targetPath, anchorText);
 						if (count >= EDIT_FAIL_CEILING && !failNotified.has(targetPath)) {
@@ -429,17 +562,29 @@ async function runLoop(
 							}
 						);
 						let breadthHint = "";
-						if (consecutiveEditsOnSameFile >= 3 && uneditedTargets.length > 0) {
+						if (consecutiveEditsOnSameFile >= 2 && uneditedTargets.length > 0) {
 							breadthHint = ` STOP editing \`${normTarget}\` — you have made ${consecutiveEditsOnSameFile} consecutive edits on it. ${uneditedTargets.length} file(s) still need ANY edit: ${uneditedTargets.slice(0, 6).map((f: string) => `\`${f}\``).join(", ")}. Move to the next file NOW. One edit per file scores far higher than many edits on one file.`;
 						} else if (uneditedTargets.length > 0) {
 							breadthHint = ` ${uneditedTargets.length} target file(s) still need edits: ${uneditedTargets.slice(0, 6).map((f: string) => `\`${f}\``).join(", ")}. Move to the next unedited file — breadth across files scores higher than depth in one file.`;
 						}
+
+						// v11d: sibling auto-discovery. After a successful
+						// edit, scan the containing directory for siblings
+						// that plausibly need parallel edits (test fixtures,
+						// generated-code siblings, same-extension peers).
+						// Fires only on the first edit of each NEW directory
+						// so we don't spam.
+						let siblingHint = "";
+						if (firstEdit || consecutiveEditsOnSameFile === 1) {
+							siblingHint = buildSiblingHint(normTarget, editedPaths);
+						}
+
 						pendingMessages.push({
 							role: "user",
 							content: [
 								{
 									type: "text",
-									text: `\`${targetPath}\` updated successfully.${breadthHint}`,
+									text: `\`${targetPath}\` updated successfully.${breadthHint}${siblingHint}`,
 								},
 							],
 							timestamp: Date.now(),
@@ -470,6 +615,38 @@ async function runLoop(
 						if (output.includes("ConnectionRefusedError") || output.includes("Connection refused") || output.includes("ECONNREFUSED")) {
 							pendingMessages.push({ role: "user", content: [{ type: "text", text: "No services available in this environment. All network requests will fail. Proceed with \`read\` and \`edit\` only." }], timestamp: Date.now() });
 							break;
+						}
+					}
+					// v11d: if fd / find / grep / rg tools fail because the
+					// binary isn't on PATH inside this sandbox, hand back a
+					// concrete bash one-liner the model can run instead of
+					// giving up on discovery.
+					if ((tr.toolName === "find" || tr.toolName === "grep") && tr.isError && pendingMessages.length === 0) {
+						const errText = tr.content?.map((c: any) => c.text ?? "").join("") ?? "";
+						if (/not (found|available)|No such file|ENOENT/i.test(errText)) {
+							const tc = toolCalls.find((c: any) => c.type === "toolCall" && c.name === tr.toolName);
+							if (tc) {
+								const args = (tc as any).arguments ?? {};
+								const path = typeof args.path === "string" && args.path ? args.path : ".";
+								let bashCmd = "";
+								if (tr.toolName === "find") {
+									const pattern = typeof args.pattern === "string" ? args.pattern : typeof args.glob === "string" ? args.glob : "*";
+									bashCmd = `find ${path} -type f -name "${pattern}" -not -path "*/node_modules/*" -not -path "*/.git/*" -not -path "*/dist/*" -not -path "*/build/*" | head -30`;
+								} else {
+									const pattern = typeof args.pattern === "string" ? args.pattern : "";
+									const glob = typeof args.glob === "string" ? args.glob : "";
+									const include = glob ? ` --include="${glob}"` : "";
+									bashCmd = `grep -rnl${include} --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=dist --exclude-dir=build "${pattern}" ${path} | head -20`;
+								}
+								pendingMessages.push({
+									role: "user",
+									content: [{
+										type: "text",
+										text: `The ${tr.toolName} tool is unavailable in this sandbox. Run this with \`bash\` instead:\n\`\`\`\n${bashCmd}\n\`\`\``,
+									}],
+									timestamp: Date.now(),
+								});
+							}
 						}
 					}
 				}
